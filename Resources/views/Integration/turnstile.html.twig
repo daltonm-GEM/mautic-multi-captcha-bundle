@@ -23,8 +23,6 @@ Varables
 {% set order = field.order|default(0) %}
 {% set validationMessage = '' %}
 
-<!-- MMC TURNSTILE FORK -->
-
 {% set inputAttributes = htmlAttributesStringToArray(field.inputAttributes|default('')) %}
 {% set labelAttributes = htmlAttributesStringToArray(field.labelAttributes|default('')) %}
 {% set containerAttributes = htmlAttributesStringToArray(field.containerAttributes|default('')) %}
@@ -137,20 +135,15 @@ Varables
 {% endif %}
 {# end: field_helper #}
 
-{% set action = app.request.get('objectAction') %}
-{% set settings = field.properties %}
-
-{% set integrations = [] %}
-{% if settings.integrations is defined and settings.integrations is not empty %}
-    {% set integrations = settings.integrations[0:-1]|split(',') %}
-{% endif %}
-
 {% set formName = formName|replace({'_': ''})|default('mauticform') %}
 
 {% block turnstile %}
     {% set siteKey = field.customParameters.site_key|default(null) %}
     {% set explicitConsent = field.properties.explicitConsent|default(false) %}
-    {% set mmcSuffix = (formName|default('mauticform') ~ '_' ~ field.alias ~ '_' ~ id)|replace({' ': '', '-': '_'}) %}
+
+    {# Unique per-field instance #}
+    {% set mmcSuffix = (formName ~ '_' ~ field.alias ~ '_' ~ id)|replace({' ': '', '-': '_'}) %}
+    {% set widgetId = 'cf_turnstile_' ~ mmcSuffix %}
 
     {% if field.showLabel %}
         <label {% for attrName, attrValue in labelAttributes %}{{ attrName }}="{% if attrValue is iterable %}{{ attrValue|join(' ') }}{% else %}{{ attrValue }}{% endif %}"{% endfor %}>
@@ -163,172 +156,65 @@ Varables
             Cloudflare Turnstile Widget ({% if explicitConsent %}explicit{% else %}implicit{% endif %} consent mode)
         </div>
     {% else %}
-        {# Global (page-level) helper, created once. Safe for multiple forms per page. #}
+        {# One tiny global helper. Keep it SMALL to avoid Mautic generate.js escaping issues. #}
         <script type="text/javascript">
-        (function () {
-            if (window.__mmcTurnstile) {
-                return;
-            }
-
-            window.__mmcTurnstile = {
-                apiLoading: false,
-
-                ensureApi: function (onReady) {
-                    if (window.turnstile) {
-                        onReady && onReady();
+        (function(){
+            if(window.__mmcTs){return;}
+            window.__mmcTs={
+                apiLoading:false,
+                ensureApi:function(cb){
+                    if(window.turnstile){cb&&cb();return;}
+                    if(this.apiLoading){
+                        var i=0,t=setInterval(function(){
+                            i++; if(window.turnstile){clearInterval(t); cb&&cb();}
+                            if(i>50){clearInterval(t);}
+                        },100);
                         return;
                     }
-
-                    // Already loading: poll until ready
-                    if (this.apiLoading) {
-                        var tries = 0;
-                        var t = setInterval(function () {
-                            tries++;
-                            if (window.turnstile) {
-                                clearInterval(t);
-                                onReady && onReady();
-                            }
-                            if (tries > 50) clearInterval(t);
-                        }, 100);
-                        return;
-                    }
-
-                    this.apiLoading = true;
-
-                    // Inject Turnstile API once
-                    if (!document.querySelector('script[data-mmc-turnstile-api="1"]')) {
-                        var s = document.createElement('script');
-                        s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-                        s.async = true;
-                        s.defer = true;
-                        s.setAttribute('data-mmc-turnstile-api', '1');
-                        s.onload = function () {
-                            onReady && onReady();
-                        };
+                    this.apiLoading=true;
+                    if(!document.querySelector('script[data-mmc-turnstile-api="1"]')){
+                        var s=document.createElement('script');
+                        s.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+                        s.async=true; s.defer=true;
+                        s.setAttribute('data-mmc-turnstile-api','1');
+                        s.onload=function(){cb&&cb();};
                         document.head.appendChild(s);
                     } else {
-                        // Script exists; poll until ready
-                        var tries2 = 0;
-                        var t2 = setInterval(function () {
-                            tries2++;
-                            if (window.turnstile) {
-                                clearInterval(t2);
-                                onReady && onReady();
-                            }
-                            if (tries2 > 50) clearInterval(t2);
-                        }, 100);
+                        var j=0,t2=setInterval(function(){
+                            j++; if(window.turnstile){clearInterval(t2); cb&&cb();}
+                            if(j>50){clearInterval(t2);}
+                        },100);
                     }
                 },
-
-                renderEligible: function (root) {
-                    if (!window.turnstile) return;
-                    root = root || document;
-
-                    var nodes = root.querySelectorAll('.mmc-turnstile');
-                    nodes.forEach(function (el) {
-                        if (el.dataset.rendered === '1') return;
-
-                        // Consent-gated widgets render only when granted
-                        if (el.dataset.consentRequired === '1' && el.dataset.consentGranted !== '1') {
-                            return;
-                        }
-
-                        el.dataset.rendered = '1';
-
-                        window.turnstile.render(el, {
-                            sitekey: el.dataset.sitekey,
-                            size: el.dataset.size || 'normal',
-                            theme: el.dataset.theme || 'auto',
-                            'response-field-name': el.dataset.responseFieldName || 'cf-turnstile-response'
-                        });
+                render:function(el){
+                    if(!window.turnstile || !el || el.dataset.rendered==="1"){return;}
+                    el.dataset.rendered="1";
+                    window.turnstile.render(el,{
+                        sitekey: el.dataset.sitekey,
+                        size: el.dataset.size || "normal",
+                        theme: el.dataset.theme || "auto",
+                        "response-field-name": el.dataset.responseFieldName || "cf-turnstile-response"
                     });
-                },
-
-                wireConsentCheckboxes: function () {
-                    if (document.body.dataset.mmcTurnstileWired === '1') return;
-                    document.body.dataset.mmcTurnstileWired = '1';
-
-                    document.addEventListener('change', function (e) {
-                        var cb = e.target;
-                        if (!cb || !cb.classList || !cb.classList.contains('mmc-turnstile-consent')) return;
-                        if (!cb.checked) return;
-
-                        var wrapper = cb.closest('[data-mmc-turnstile-wrapper]');
-                        if (!wrapper) return;
-
-                        var widget = wrapper.querySelector('.mmc-turnstile');
-                        if (!widget) return;
-
-                        widget.dataset.consentGranted = '1';
-                        cb.disabled = true;
-
-                        window.__mmcTurnstile.ensureApi(function () {
-                            window.__mmcTurnstile.renderEligible(wrapper);
-                        });
-                    }, true);
-                },
-
-                observe: function () {
-                    if (document.body.dataset.mmcTurnstileObserved === '1') return;
-                    document.body.dataset.mmcTurnstileObserved = '1';
-
-                    // MutationObserver to handle dynamic inserts (page builders / script embed reinits)
-                    if (!('MutationObserver' in window)) return;
-
-                    var obs = new MutationObserver(function (mutations) {
-                        for (var i = 0; i < mutations.length; i++) {
-                            var m = mutations[i];
-                            for (var j = 0; j < m.addedNodes.length; j++) {
-                                var n = m.addedNodes[j];
-                                if (!n || n.nodeType !== 1) continue;
-
-                                // If the added node is (or contains) a turnstile placeholder, try rendering
-                                if (n.classList && n.classList.contains('mmc-turnstile')) {
-                                    window.__mmcTurnstile.ensureApi(function () {
-                                        window.__mmcTurnstile.renderEligible(document);
-                                    });
-                                    return;
-                                }
-                                if (n.querySelector && n.querySelector('.mmc-turnstile')) {
-                                    window.__mmcTurnstile.ensureApi(function () {
-                                        window.__mmcTurnstile.renderEligible(document);
-                                    });
-                                    return;
-                                }
-                            }
-                        }
-                    });
-
-                    obs.observe(document.body, { childList: true, subtree: true });
                 }
             };
-
-            window.__mmcTurnstile.wireConsentCheckboxes();
-            window.__mmcTurnstile.observe();
-
-            // Try render on DOM ready and Mautic page events
-            document.addEventListener('DOMContentLoaded', function () {
-                window.__mmcTurnstile.ensureApi(function () {
-                    window.__mmcTurnstile.renderEligible(document);
-                });
-            });
-
-            document.addEventListener('mauticPageOnLoad', function () {
-                window.__mmcTurnstile.ensureApi(function () {
-                    window.__mmcTurnstile.renderEligible(document);
-                });
-            });
         })();
         </script>
 
         {% if explicitConsent %}
-            <div data-mmc-turnstile-wrapper="{{ mmcSuffix }}">
+            <div data-mmc-turnstile-wrapper="{{ mmcSuffix }}" style="margin-bottom:10px;">
                 <div style="display:flex; align-items:flex-start;">
-                    <input
-                        type="checkbox"
-                        class="mmc-turnstile-consent"
-                        style="margin-right:1rem; margin-top:3px;"
-                    />
+                    <input type="checkbox"
+                           class="mmc-turnstile-consent"
+                           style="margin-right:1rem; margin-top:3px;"
+                           onchange="(function(cb){
+                               if(!cb.checked){return;}
+                               cb.disabled=true;
+                               var wrap=cb.closest('[data-mmc-turnstile-wrapper]');
+                               if(!wrap){return;}
+                               var el=wrap.querySelector('#{{ widgetId }}');
+                               if(!el){return;}
+                               window.__mmcTs && window.__mmcTs.ensureApi(function(){ window.__mmcTs.render(el); });
+                           })(this);" />
                     <label>
                         {{ field.customParameters.stringBag["accept_cookies"] }}<br />
                         <strong>{{ field.customParameters.stringBag["accept_cookies.notice"] }}:</strong>
@@ -343,27 +229,24 @@ Varables
                 <span class="mauticform-errormsg" style="display: none;"></span>
             </div>
 
-            {# Turnstile placeholder (one per form instance). #}
             <div
+                id="{{ widgetId }}"
                 class="mmc-turnstile"
                 data-sitekey="{{ siteKey }}"
                 data-size="{{ field.properties.size }}"
                 data-theme="{{ field.properties.theme }}"
                 data-response-field-name="cf-turnstile-response"
-                data-consent-required="{% if explicitConsent %}1{% else %}0{% endif %}"
-                data-consent-granted="{% if explicitConsent %}0{% else %}1{% endif %}"
-                style="display:block; flex-flow:row;"
+                style="display:block;"
             ></div>
         </div>
 
-        {# For implicit consent, attempt immediate render after this field is output. #}
+        {# Implicit consent: render immediately for this widget #}
         {% if not explicitConsent %}
             <script type="text/javascript">
-            (function () {
-                if (!window.__mmcTurnstile) return;
-                window.__mmcTurnstile.ensureApi(function () {
-                    window.__mmcTurnstile.renderEligible(document);
-                });
+            (function(){
+                var el=document.getElementById('{{ widgetId }}');
+                if(!el || !window.__mmcTs){return;}
+                window.__mmcTs.ensureApi(function(){ window.__mmcTs.render(el); });
             })();
             </script>
         {% endif %}
